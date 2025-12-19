@@ -1,0 +1,17 @@
+
+###
+POST http://localhost:3000/api/send-message
+Content-Type: application/json
+
+{
+  "recipients": [
+    {
+      "send": "994703100206",
+      "message": "Merhaba, bu bir test mesajıdır. *Type:* Toplanti *Id:* 101"
+    },
+    {
+      "send": "994773100206",
+      "message": "Salam, mesaj testi. *Type:* seminar *Id:* 31"
+    }
+  ]
+}
