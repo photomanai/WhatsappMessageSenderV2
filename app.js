@@ -100,6 +100,7 @@ async function startBot() {
     if (!msg.key.fromMe && msg.message) {
       const sender = msg.key.remoteJidAlt || msg.key.remoteJid;
       const name = msg.pushName || "Unknown Number";
+      // Strip @domain AND :device suffix (multi-device fix: 994XXX:13@s.whatsapp.net → 994XXX)
       const cleanSender = sender.split("@")[0].split(":")[0];
 
       const text =
@@ -134,6 +135,9 @@ async function startBot() {
          LIMIT 1`,
         [msgId, msgType, normalizeNumber(cleanSender)]
       );
+
+      // 🔍 Debug: see exactly what's being matched
+      console.log(`🔍 DB Query → group_id: ${msgId} | type: ${msgType} | phone: ${normalizeNumber(cleanSender)}`);
 
       if (rows.length > 0) {
         const contactId = rows[0].id;
