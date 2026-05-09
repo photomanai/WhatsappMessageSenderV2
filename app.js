@@ -3,6 +3,7 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  makeInMemoryStore,
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -56,6 +57,22 @@ const positiveReplies = [
   "👍", "✅", "🆗", "👌",
 ];
 
+// --- IN-MEMORY STORE (LID → Phone resolver) ---
+const store = makeInMemoryStore({ logger: pino({ level: "silent" }) });
+
+/**
+ * WhatsApp Privacy Mode sends LID (@lid) instead of real phone number.
+ * This resolves a LID back to the actual phone number using the in-memory store.
+ */
+const resolveLidToPhone = (lidJid) => {
+  for (const [jid, contact] of Object.entries(store.contacts || {})) {
+    if (jid.endsWith("@s.whatsapp.net") && contact.lid === lidJid) {
+      return jid.split("@")[0].split(":")[0];
+    }
+  }
+  return null;
+};
+
 // --- WHATSAPP BOT LOGIC ---
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -69,6 +86,9 @@ async function startBot() {
   });
 
   globalSock = sock;
+
+  // Bind store to track contacts (needed for LID → phone resolution)
+  store.bind(sock.ev);
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -98,10 +118,22 @@ async function startBot() {
 
     const msg = messages[0];
     if (!msg.key.fromMe && msg.message) {
-      const sender = msg.key.remoteJidAlt || msg.key.remoteJid;
+      const rawJid = msg.key.remoteJid || "";
       const name = msg.pushName || "Unknown Number";
-      // Strip @domain AND :device suffix (multi-device fix: 994XXX:13@s.whatsapp.net → 994XXX)
-      const cleanSender = sender.split("@")[0].split(":")[0];
+
+      let cleanSender;
+      if (rawJid.endsWith("@lid")) {
+        // LID mode: resolve to real phone number via store
+        const resolved = resolveLidToPhone(rawJid);
+        if (!resolved) {
+          console.log(`⚠️ LID could not be resolved: ${rawJid}`);
+          return;
+        }
+        cleanSender = resolved;
+      } else {
+        // Normal: strip @domain and :device suffix
+        cleanSender = rawJid.split("@")[0].split(":")[0];
+      }
 
       const text =
         msg.message.conversation ||
