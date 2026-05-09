@@ -18,7 +18,6 @@ const IP = process.env.IP || "127.0.0.1";
 
 app.use(express.json());
 
-// Global socket variable (accessible by API)
 let globalSock = null;
 
 // --- DATABASE CONNECTION ---
@@ -30,26 +29,11 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  multipleStatements: true,
 });
 
 const db = pool.promise();
 
 // --- HELPER FUNCTIONS ---
-
-/**
- * Fetches all contacts from the database.
- * @returns {Promise<Array>} List of contacts
- */
-const getContactsNumList = async () => {
-  try {
-    const [rows] = await db.query("SELECT * FROM contacts");
-    return rows;
-  } catch (error) {
-    console.error("❌ MySQL Error:", error.message);
-    return [];
-  }
-};
 
 const normalizeNumber = (num) =>
   typeof num === "string" ? num.replace(/\D/g, "") : "";
@@ -61,7 +45,7 @@ const positiveReplies = [
   // Azerbaijani
   "hə", "gelirem", "gelecem", "bəli", "gelirəm", "həə", "elədi", "həəə", "tamamdi", "tamamdır", "okdi", "oldu", "gələcəm",
   // English
-  "yes", "yep", "yup", "yeah", "sure", "ok", "okay", "okey", "fine", "coming", "i will come", "i come", "i’ll come",
+  "yes", "yep", "yup", "yeah", "sure", "ok", "okay", "okey", "fine", "coming", "i will come", "i come", "i'll come",
   // Russian
   "да", "ага", "угу", "конечно", "хорошо", "ладно", "иду", "буду", "приду", "да, приду",
   // Polish
@@ -84,7 +68,6 @@ async function startBot() {
     printQRInTerminal: false,
   });
 
-  // Assign to global variable for API usage
   globalSock = sock;
 
   sock.ev.on("creds.update", saveCreds);
@@ -101,9 +84,7 @@ async function startBot() {
       const shouldReconnect =
         (lastDisconnect.error instanceof Boom)?.output?.statusCode !==
         DisconnectReason.loggedOut;
-      console.log(
-        `⚠️ Connection closed. Reconnecting: ${shouldReconnect}`
-      );
+      console.log(`⚠️ Connection closed. Reconnecting: ${shouldReconnect}`);
       if (shouldReconnect) startBot();
     } else if (connection === "open") {
       console.log("\n✅ WhatsApp Connection Successful!");
@@ -117,63 +98,61 @@ async function startBot() {
 
     const msg = messages[0];
     if (!msg.key.fromMe && msg.message) {
-      // Extract Message Details
       const sender = msg.key.remoteJidAlt || msg.key.remoteJid;
       const name = msg.pushName || "Unknown Number";
       const cleanSender = sender.split("@")[0];
-      
+
       const text =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
         "[Media Message]";
-      
+
       const quotedText =
         msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
           ?.extendedTextMessage?.text ||
         msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
           ?.conversation;
 
-      // Check if the quoted message contains Type and Id
       const regex = /\*Type:\*\s*(.+)\s*\*Id:\*\s*(\d+)/;
       const match = quotedText && quotedText.match(regex);
-      const msgType = match ? match[1].trim() : null;
-      const msgId = match ? parseInt(match[2].trim()) : null;
+      if (!match) return;
 
-      if (msgType && msgId) {
-        // Determine if response is positive
-        const isPositive = positiveReplies.some((val) =>
-          text.toLowerCase().includes(val)
+      const msgType = match[1].trim();
+      const msgId = parseInt(match[2].trim());
+
+      const isPositive = positiveReplies.some((val) =>
+        text.toLowerCase().includes(val)
+      );
+      const comeValue = isPositive ? 1 : 0;
+
+      // ✅ Only fetch the specific contact — no full table scan
+      const [rows] = await db.query(
+        `SELECT id FROM contacts
+         WHERE group_id = ?
+           AND type = ?
+           AND REGEXP_REPLACE(phone_num, '[^0-9]', '') = ?
+         LIMIT 1`,
+        [msgId, msgType, normalizeNumber(cleanSender)]
+      );
+
+      if (rows.length > 0) {
+        const contactId = rows[0].id;
+        await db.query(`UPDATE contacts SET come = ? WHERE id = ?`, [
+          comeValue,
+          contactId,
+        ]);
+        console.log(
+          `✅ Database Updated: Contact ID ${contactId} set to 'come' = ${comeValue}`
         );
-        const comeValue = isPositive ? 1 : 0;
-
-        const contacts = await getContactsNumList();
-
-        const matchedContact = contacts.find(
-          (contact) =>
-            contact.group_id == msgId &&
-            contact.type == msgType &&
-            normalizeNumber(contact.phone_num) === normalizeNumber(cleanSender)
-        );
-
-        if (matchedContact) {
-          const contactId = matchedContact.id;
-          await db.query(`UPDATE contacts SET come = ? WHERE id = ?`, [
-            comeValue,
-            contactId,
-          ]);
-          console.log(
-            `✅ Database Updated: Contact ID ${contactId} set to 'come' = ${comeValue}`
-          );
-        } else {
-            console.log("⚠️ No matching contact found in DB for this reply.");
-        }
-
-        console.log(`\n📩 [NEW REPLY]`);
-        console.log(`From: ${name} (${cleanSender})`);
-        console.log(`Text: ${text} | Status: ${comeValue}`);
-        console.log(`Type: ${msgType} | ID: ${msgId}`);
-        console.log("---------------------------------");
+      } else {
+        console.log("⚠️ No matching contact found in DB for this reply.");
       }
+
+      console.log(`\n📩 [NEW REPLY]`);
+      console.log(`From: ${name} (${cleanSender})`);
+      console.log(`Text: ${text} | Status: ${comeValue}`);
+      console.log(`Type: ${msgType} | ID: ${msgId}`);
+      console.log("---------------------------------");
     }
   });
 }
@@ -182,7 +161,6 @@ async function startBot() {
 app.post("/api/send-message", async (req, res) => {
   const { recipients } = req.body;
 
-  // 1. Check Bot Connection
   if (!globalSock) {
     return res.status(503).json({
       status: "error",
@@ -190,17 +168,14 @@ app.post("/api/send-message", async (req, res) => {
     });
   }
 
-  // 2. Validate Input
   if (!Array.isArray(recipients) || recipients.length === 0) {
     return res
       .status(400)
       .json({ error: "Invalid input format or empty recipients list." });
   }
 
-  // 3. Process Batch Sending
   const results = await Promise.all(
     recipients.map(async (recipient) => {
-      // Missing Data Check
       if (!recipient.send || !recipient.message) {
         return {
           recipient: recipient.send || "unknown",
@@ -209,31 +184,16 @@ app.post("/api/send-message", async (req, res) => {
         };
       }
 
-      // Format Number
       const cleanPhoneNumber = normalizeNumber(recipient.send.toString());
       const chatId = `${cleanPhoneNumber}@s.whatsapp.net`;
-      const text = recipient.message;
 
       try {
         console.log(`📤 Sending message to: ${cleanPhoneNumber}`);
-
-        await globalSock.sendMessage(chatId, { text: text });
-
-        return {
-          recipient: recipient.send,
-          status: "success",
-          chatId: chatId,
-        };
+        await globalSock.sendMessage(chatId, { text: recipient.message });
+        return { recipient: recipient.send, status: "success", chatId };
       } catch (error) {
-        console.error(
-          `❌ Failed to send to (${cleanPhoneNumber}):`,
-          error.message
-        );
-        return {
-          recipient: recipient.send,
-          status: "error",
-          error: error.message,
-        };
+        console.error(`❌ Failed to send to (${cleanPhoneNumber}):`, error.message);
+        return { recipient: recipient.send, status: "error", error: error.message };
       }
     })
   );
@@ -244,9 +204,7 @@ app.post("/api/send-message", async (req, res) => {
 // --- START SYSTEM ---
 console.log("🚀 System initializing...");
 
-// Start Express Server First
 app.listen(PORT, IP, () => {
   console.log(`🌍 API Server running at: http://${IP}:${PORT}`);
-  // Then Start the Bot
   startBot();
 });
