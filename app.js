@@ -100,7 +100,7 @@ async function startBot() {
     if (!msg.key.fromMe && msg.message) {
       const sender = msg.key.remoteJidAlt || msg.key.remoteJid;
       const name = msg.pushName || "Unknown Number";
-      const cleanSender = sender.split("@")[0];
+      const cleanSender = sender.split("@")[0].split(":")[0];
 
       const text =
         msg.message.conversation ||
